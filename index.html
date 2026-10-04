@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ID Verification</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<main>
+  <h1>Identity verification</h1>
+  <div class="steps">
+    <div id="s-front">1 · Front</div><div id="s-back">2 · Back</div><div id="s-face">3 · Face</div>
+  </div>
+  <p id="instruction">Press start, then keep your ID card front inside the frame for 30 seconds.</p>
+  <div class="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <div id="guide"></div>
+    <div id="timer">30s</div>
+  </div>
+  <div id="bar"><i></i></div>
+  <button id="start">Start step 1 (ID front)</button>
+  <div id="msg"></div>
+  <p id="saveinfo" class="hint"></p>
+</main>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
