@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ID Verification</title>
+<style>
+  :root { --bg:#0f1115; --fg:#f2f4f8; --muted:#9aa3b2; --accent:#3ddc97; --danger:#ff5d5d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; min-height:100vh; display:flex; justify-content:center; }
+  main { width:100%; max-width:640px; padding:16px; display:flex; flex-direction:column; gap:12px; }
+  h1 { font-size:1.3rem; margin:0; }
+  .steps { display:flex; gap:8px; }
+  .steps div { flex:1; padding:6px; text-align:center; border-radius:6px; background:#1b1f27; color:var(--muted); font-size:.85rem; }
+  .steps .active { background:var(--accent); color:#06281a; font-weight:600; }
+  .steps .done { background:#1f3b30; color:var(--accent); }
+  #instruction { color:var(--muted); min-height:2.6em; }
+  .stage { position:relative; width:100%; aspect-ratio:3/4; background:#000; border-radius:12px; overflow:hidden; }
+  video { width:100%; height:100%; object-fit:cover; display:block; }
+  video.mirror { transform:scaleX(-1); }
+  /* Guide frame: dark mask everywhere except inside the border */
+  #guide { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); border:4px solid var(--accent);
+    box-shadow:0 0 0 100vmax rgba(0,0,0,.55); pointer-events:none; display:none; }
+  #guide.card { width:86%; aspect-ratio:1.586; border-radius:14px; }
+  #guide.face { width:64%; aspect-ratio:3/4; border-radius:50%; }
+  #guide.rec { border-color:var(--danger); }
+  .stage { clip-path: inset(0 round 12px); }
+  #timer { position:absolute; top:10px; right:12px; background:rgba(0,0,0,.6); padding:4px 10px; border-radius:999px; font-variant-numeric:tabular-nums; display:none; }
+  #timer.rec { display:block; color:var(--danger); }
+  #bar { height:6px; background:#1b1f27; border-radius:3px; overflow:hidden; }
+  #bar i { display:block; height:100%; width:0; background:var(--danger); }
+  button { font:inherit; padding:14px; border:0; border-radius:10px; background:var(--accent); color:#06281a; font-weight:700; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  #msg { min-height:1.4em; }
+  .err { color:var(--danger); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Identity verification</h1>
+  <div class="steps"><div id="s-front">1 · Front</div><div id="s-back">2 · Back</div><div id="s-face">3 · Face</div></div>
+  <p id="instruction">Press start, then keep your ID card front inside the frame for 30 seconds.</p>
+  <div class="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <div id="guide"></div>
+    <div id="timer">30s</div>
+  </div>
+  <div id="bar"><i></i></div>
+  <button id="start">Start step 1 (ID front)</button>
+  <div id="msg"></div>
+</main>
+<script>
+const DURATION = 30;
+const STEPS = [
+  { key:'front', facing:'environment', shape:'card', text:'Hold the FRONT of your ID card inside the frame. Keep it steady and readable for 30 seconds.' },
+  { key:'back',  facing:'environment', shape:'card', text:'Now show the BACK of your ID card inside the frame for 30 seconds.' },
+  { key:'face',  facing:'user',        shape:'face', text:'Place your face inside the oval and look at the camera for 30 seconds.' },
+];
+const $ = (id) => document.getElementById(id);
+const video = $('video'), guide = $('guide'), timer = $('timer'), btn = $('start'), msg = $('msg'), bar = $('bar').firstElementChild;
+let stream = null, index = 0, session = null, busy = false;
+
+function setMsg(t, err) { msg.textContent = t; msg.className = err ? 'err' : ''; }
+function paintSteps() {
+  STEPS.forEach((s, i) => { $('s-' + s.key).className = i < index ? 'done' : i === index ? 'active' : ''; });
+}
+function pickMime() {
+  return ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
+    .find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+}
+async function openCamera(step) {
+  stopCamera();
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: step.facing, width: { ideal: 1280 }, height: { ideal: 720 } },
+    audio: false,
+  });
+  video.srcObject = stream;
+  video.classList.toggle('mirror', step.facing === 'user');
+  guide.className = step.shape;
+  guide.style.display = 'block';
+  await video.play().catch(() => {});
+}
+function stopCamera() { if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null; }
+
+function record(mime) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2_500_000 });
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    rec.onerror = (e) => reject(e.error || new Error('recording failed'));
+    rec.onstop = () => { clearInterval(tick); resolve(new Blob(chunks, { type: mime.split(';')[0] })); };
+    const startedAt = performance.now();
+    const tick = setInterval(() => {
+      const left = Math.max(0, DURATION - (performance.now() - startedAt) / 1000);
+      timer.textContent = Math.ceil(left) + 's';
+      bar.style.width = ((DURATION - left) / DURATION * 100) + '%';
+      if (left <= 0) rec.stop();
+    }, 100);
+    rec.start(1000);
+    timer.className = 'rec'; guide.classList.add('rec');
+  });
+}
+async function upload(step, blob) {
+  const r = await fetch(`/upload?step=${step.key}&session=${session}`, {
+    method: 'POST', headers: { 'Content-Type': blob.type }, body: blob,
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'upload failed');
+}
+
+async function runStep() {
+  if (busy) return;
+  busy = true; btn.disabled = true; setMsg('');
+  const step = STEPS[index];
+  try {
+    if (!session) session = (await (await fetch('/session')).json()).session;
+    const mime = pickMime();
+    if (!mime) throw new Error('This browser cannot record video.');
+    $('instruction').textContent = step.text;
+    await openCamera(step);
+    // short pause so the user can position the object in the frame
+    for (let n = 3; n > 0; n--) { setMsg(`Get ready… ${n}`); await new Promise((r) => setTimeout(r, 1000)); }
+    setMsg('Recording…');
+    const blob = await record(mime);
+    stopCamera();
+    timer.className = ''; guide.classList.remove('rec'); bar.style.width = '0';
+    setMsg('Saving video…');
+    await upload(step, blob);
+    index++;
+    paintSteps();
+    if (index < STEPS.length) {
+      const next = STEPS[index];
+      guide.style.display = 'none'; video.srcObject = null;
+      $('instruction').textContent = `Step ${index} saved. Next: ${next.key === 'back' ? 'ID card back' : 'face verification'}.`;
+      btn.textContent = `Start step ${index + 1} (${next.key === 'back' ? 'ID back' : 'face'})`;
+      btn.disabled = false; setMsg('');
+    } else {
+      guide.style.display = 'none'; video.srcObject = null;
+      $('instruction').textContent = 'Verification videos submitted. Thank you!';
+      btn.textContent = 'Done'; setMsg('All 3 videos saved.');
+    }
+  } catch (e) {
+    stopCamera(); timer.className = ''; guide.classList.remove('rec'); bar.style.width = '0';
+    const denied = e && (e.name === 'NotAllowedError' || e.name === 'NotFoundError');
+    setMsg(denied ? 'Camera access is required (and needs HTTPS or localhost).' : (e.message || 'Something went wrong.'), true);
+    btn.textContent = 'Retry this step'; btn.disabled = false;
+  } finally { busy = false; }
+}
+btn.addEventListener('click', runStep);
+paintSteps();
+</script>
+</body>
+</html>
